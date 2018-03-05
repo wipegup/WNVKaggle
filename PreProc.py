@@ -16,14 +16,6 @@ from sklearn.decomposition import TruncatedSVD
 # Calculations and Functions for water/park Data
 ##########
 
-import shapefile
-from scipy.spatial import cKDTree
-import numpy as np
-import pandas as pd
-from os import listdir
-from os.path import isfile, join
-from sklearn.decomposition import TruncatedSVD
-
 # Park and water shapefile locations
 parkDir = './AddData/Parks/'
 waterDir = './AddData/Water/'

@@ -275,8 +275,6 @@ def WeatherProcess(train, test):
         for d in fyear:
             dates = np.insert(dates, 0, d - pd.Timedelta(days = 8))
 
-        dates = sorted(dates)
-        
         dateRanges = []
         for i in range(len(dates)-1):
             if pd.to_datetime(dates[i]).year == pd.to_datetime(dates[i+1]).year:
@@ -292,7 +290,7 @@ def WeatherProcess(train, test):
         toRet = pd.DataFrame().from_dict(dct)
         toRet = toRet.transpose()
         toRet.index = [idx for idx in toRet.index]
-        toRet['Trap'] = toRet.index.map(lambda x: x[0])
+        toRet['Location'] = toRet.index.map(lambda x: x[0])
         toRet['Date'] = toRet.index.map(lambda x: x[1])
         toRet.index = range(len(toRet))
 
@@ -300,7 +298,7 @@ def WeatherProcess(train, test):
 
     def trap_agregator(trap_df, weather, avgTDict):
         trapWeather = {}
-        trap = trap_df['Trap'].iloc[0]
+        loc = trap_df['Location'].iloc[0]
 
         dates = trap_df['Date'].unique()
         dates = sorted(dates)
@@ -309,7 +307,7 @@ def WeatherProcess(train, test):
 
         for dr in dateRanges:
             weather_sub = subset_weather(dr, weather)
-            trapWeather[(trap, dr[1])] = calculate_agregate(weather_sub, avgTDict)
+            trapWeather[(loc, dr[1])] = calculate_agregate(weather_sub, avgTDict)
         toRet = pd.DataFrame().from_dict(trapWeather)
 
         return TWeatherDFMaker(trapWeather)
@@ -317,9 +315,9 @@ def WeatherProcess(train, test):
     def transform(df):
         observations = []
 
-        traps = df['Trap'].unique()
-        for t in traps:
-            observations.append(trap_agregator(df[df['Trap'] == t],
+        locs = df['Location'].unique()
+        for l in locs:
+            observations.append(trap_agregator(df[df['Location'] == l],
             weather, avgTDict))
         toRet = pd.concat(observations, axis = 'rows')
 
@@ -344,8 +342,8 @@ def ProcessPipeline(train, test):
     train = train.merge(trainL, left_on = 'Location', right_index = True)
     test = test.merge(testL, left_on = 'Location', right_index = True)
     print('3',test.shape)
-    train = train.merge(trainW, on = ['Trap','Date'])
-    test = test.merge(testW,on = ['Trap','Date'])
+    train = train.merge(trainW, on = ['Location','Date'])
+    test = test.merge(testW,on = ['Location','Date'], how = 'left')
     print('2',test.shape)
 
     return train, test

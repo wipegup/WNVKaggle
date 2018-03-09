@@ -9,36 +9,56 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import FunctionTransformer
 from sklearn.linear_model import LinearRegression
 
-#class ChicagoPreprocessor(object):
-#    def __init__(train, test = None):
-#        self.parkFinder =
+############
+# Preprocessing pipeline. In lieu of SKLearn pipeline, as a result of needing
+# to do aggregation by rows. However, it is modeled on a pipeline such that
+# both the train and test data are passed in once and processed data is returned
+############
 
+#####
+# first step only impacts the training data. It aggregates observations that have
+# the same species/date/trapLocation.
+# The aggregation is of number of mosquitos and if westNile was observered
+#####
 
 def agg_on_species(train, test):
 
+    #Aggregate only mosquitos and westNile
     noAgg = [c for c in train.columns if c not in ['NumMosquitos','WnvPresent']]
-
     agg = train.groupby(noAgg)['NumMosquitos', 'WnvPresent'].sum()
 
+    # Bring features back out from multi-index
     for i, c in enumerate(noAgg):
         agg[c] = agg.index.map(lambda x:x[i])
-
     agg.index = range(0,len(agg))
+
+    # Change WNV back to binary
     agg['WnvPresent'] = (agg['WnvPresent'].map(lambda x:x>0)).astype(int)
+
     return agg, test
+
+#####
+# Initial preprocessing Adds a location feature which will be used for merging
+# changes the date column from a string to a datetime object,,
+# drops address columns which will not be used
+# Creates dummy variables for each obseved species.
+#####
 
 def InitPrepross(train, test):
 
+    # Adding a location tuple
     def location_add(df):
         df['Location'] = [(df.loc[idx,'Longitude'], df.loc[idx, 'Latitude'])
                             for idx in df.index]
         return df
 
+    # Changing data type of date
     def change_date(df):
         df['Date'] = pd.to_datetime(df['Date'])
 
         return df
 
+    # Dropping address features
     def drop_unused(df):
         for col in ['Address','Block','Street',
               'AddressNumberAndStreet', 'AddressAccuracy',
@@ -50,6 +70,7 @@ def InitPrepross(train, test):
 
         return df
 
+    # Adding Species Dummy Vars
     def species_dummies(df):
         species = ['CULEX PIPIENS', 'CULEX PIPIENS/RESTUANS',
                 'CULEX RESTUANS', 'CULEX SALINARIUS',
@@ -60,6 +81,7 @@ def InitPrepross(train, test):
 
         return df
 
+    # Wrapper function which combines all steps
     def transform(df):
         df = drop_unused(df)
         df = location_add(df)
@@ -69,10 +91,19 @@ def InitPrepross(train, test):
 
     return transform(train), transform(test)
 
+#####
+# Location processing finds each unique location, and Then
+# calculates the distance from that location to each park and water
+# feature in Chicago
+#####
+
 def LocationProcess(train, test):
     parkDir = './AddData/Parks/'
     waterDir = './AddData/Water/'
 
+    # Taking in the water shape files, and building a cKDTree
+    # which returns the the nearest point to an entered point,
+    # and gives the distance
     def buildWaterFinder():
         water = [f for f in listdir(waterDir)
                 if isfile(join(waterDir,f))
@@ -87,6 +118,8 @@ def LocationProcess(train, test):
 
         return waterFinder
 
+    # Taking in park shape files, building cKDTree
+    # Also builds dictionaries for the size of each park
     def buildParkDicts():
         parks = [f for f in listdir(parkDir)
                 if isfile(join(parkDir,f))
@@ -102,6 +135,11 @@ def LocationProcess(train, test):
 
         return parkFinder, parkSize
 
+    # Given a location, and one of the finder dictinaries,
+    # return distance to nearest location in finder
+    # and if size dictionary is present, add in size location
+    # Also returns an inverse square-law feature of:
+    # park size / distance to park ^2
     def calculate_distances(loc, finder, size = None):
         Dist = {}
         for k in finder:
@@ -113,6 +151,8 @@ def LocationProcess(train, test):
                 Dist[k] = (Dist[k], size[k], size[k]/(Dist[k]**2))
         return Dist
 
+    # From the dictionary returned by distance finder, create useable DataFrame
+    # mostly deals with re-indexeing, and re-naming
     def dfFromDict(dct):
         toRet = pd.DataFrame(dct)
         toRet = toRet.transpose()
@@ -129,6 +169,8 @@ def LocationProcess(train, test):
 
         return toRet
 
+    # wrapper function which searches through unique Locations
+    # and finds distances to features
     def info(df, finder, size = None):
         uniqueLocs = df['Location'].unique()
         rows = {}
@@ -137,6 +179,7 @@ def LocationProcess(train, test):
 
         return dfFromDict(rows)
 
+    # creates dataframe that will be passed into svd
     def transform(df):
         toRet = pd.concat( [info(df, waterFinder),
                     info(df, parkFinder, parkSize)],
@@ -150,13 +193,21 @@ def LocationProcess(train, test):
     # Returns DFs: index = locations
     return transform(train), transform(test)
 
+#####
+# SVD for park/ Water data
+# gets trained on "train data"
+# but fits both training and testing data
+#####
+
 def SVD(train, test):
 
+    # Find columns that are marked with a certain letter
     def find_cols(df, tpe):
         mask = [c for c in df.columns if c[0] == tpe ]
 
         return df.loc[:,mask]
 
+    # Provide a fitted Truncated SVD
     def yeildFitTSVD(df):
         comps = 4
 
@@ -165,6 +216,7 @@ def SVD(train, test):
 
         return TSVD
 
+    # Transform, given an SVD
     def transformTSVD(df, TSVD,tpe):
         toRet = TSVD.transform(df)
         toRet = pd.DataFrame(toRet, index = df.index)
@@ -172,6 +224,9 @@ def SVD(train, test):
 
         return toRet
 
+    # Code to fit, then transform for Water, then park SVDs,
+    # given already calculated data from above function.
+    # Will then be passed to merge, by location, on to main data
 
     toRetTrain = []
     toRetTest = []
@@ -188,8 +243,14 @@ def SVD(train, test):
 
     return toRetTrain, toRetTest
 
+#####
+# Weather processing takes in weather data, aggregates for week previous to
+# observations.
+# Thus weather is aggregated for each Daterange, for each location
 def WeatherProcess(train, test):
 
+    # Preprocessing weather information, dropping columns,
+    # recasting data types
     def yeildWeather(target):
         weather = pd.read_csv(target)
         weather['Date'] = pd.to_datetime(weather['Date'])
@@ -209,6 +270,7 @@ def WeatherProcess(train, test):
         for c in toFloats:
             weather[c] = weather[c].astype(float)
 
+        # Some errors found in sunset have, e.g. 7:00 pm as '1860'
         weather['Sunset'] = [date
                             if date[-2:] != '60'
                             else str(int(date[0:2])+1)+'00'
@@ -220,6 +282,9 @@ def WeatherProcess(train, test):
 
         return weather[weather['Station']== 1]
 
+    # Create a function that will model average temperature per week
+    # Take weekly temperature averages, then model a quadradic linear model
+    # then create dictionary that includes predictions for that model
     def yeildAvgTemp(weather):
         weather['Wk'] = weather['Date'].dt.week
         weekTemp = pd.DataFrame(
@@ -235,6 +300,9 @@ def WeatherProcess(train, test):
 
         return toRet
 
+    # Given a subset of the weather dataframe, calculate averages, maxes, mins
+    # etc.
+    # Will be merged upon final date of weather subset
     def calculate_agregate( weather_sub, avgTDict):
         toRet = pd.Series()
 
@@ -261,6 +329,9 @@ def WeatherProcess(train, test):
 
         return toRet
 
+    # Given a set of dates, create date ranges to subset weather.
+    # Date ranges are either the time between trap observations, or, one week prior
+    # to the first observation in a year
     def date_ranges(dates):
         uniqueYears = set([pd.to_datetime(d).year for d in dates])
 
@@ -276,7 +347,7 @@ def WeatherProcess(train, test):
             dates = np.insert(dates, 0, d - pd.Timedelta(days = 8))
 
         dates = sorted(dates)
-        
+
         dateRanges = []
         for i in range(len(dates)-1):
             if pd.to_datetime(dates[i]).year == pd.to_datetime(dates[i+1]).year:
@@ -284,10 +355,13 @@ def WeatherProcess(train, test):
 
         return dateRanges
 
+    # create the subset of the weather data
     def subset_weather(dateRange, weather):
         mask = (weather['Date']>dateRange[0]) & (weather['Date'] <= dateRange[1])
         return weather.loc[mask]
 
+    # create a dataframe that can be easily merged onto observations
+    # merging by date and trap
     def TWeatherDFMaker(dct):
         toRet = pd.DataFrame().from_dict(dct)
         toRet = toRet.transpose()
@@ -298,6 +372,7 @@ def WeatherProcess(train, test):
 
         return toRet
 
+    # For a single trap, call functions to aggregate weather
     def trap_agregator(trap_df, weather, avgTDict):
         trapWeather = {}
         trap = trap_df['Trap'].iloc[0]
@@ -313,6 +388,8 @@ def WeatherProcess(train, test):
         toRet = pd.DataFrame().from_dict(trapWeather)
 
         return TWeatherDFMaker(trapWeather)
+
+    # Take in data frame, output dataframe with aggregated weather to be merged
 
     def transform(df):
         observations = []
@@ -331,11 +408,13 @@ def WeatherProcess(train, test):
 
     return transform(train), transform(test)
 
+# run steps in order, Print stubs deprecated for making sure dataframes
+# stay correct size
 def ProcessPipeline(train, test):
     train, test = agg_on_species(train, test)
-    print('0',test.shape)
+    #print('0',test.shape)
     train, test = InitPrepross(train, test)
-    print('1',test.shape)
+    #print('1',test.shape)
     trainW, testW = WeatherProcess(train, test)
 
     trainL, testL = LocationProcess(train, test)
@@ -343,9 +422,9 @@ def ProcessPipeline(train, test):
 
     train = train.merge(trainL, left_on = 'Location', right_index = True)
     test = test.merge(testL, left_on = 'Location', right_index = True)
-    print('3',test.shape)
+    #print('3',test.shape)
     train = train.merge(trainW, on = ['Trap','Date'])
     test = test.merge(testW,on = ['Trap','Date'])
-    print('2',test.shape)
+    #print('2',test.shape)
 
     return train, test
